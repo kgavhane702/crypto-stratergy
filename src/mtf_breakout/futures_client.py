@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Optional
 
-import pandas as pd
 from binance.um_futures import UMFutures
-from tenacity import retry, wait_exponential, stop_after_attempt
+from binance.lib.utils import config_logging
+from binance.error import ClientError
 
 from .config import get_settings, Settings
 from .utils.logger import get_logger
