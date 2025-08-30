@@ -54,6 +54,8 @@ class SymbolWatcher(threading.Thread):
         self.open_position: Optional[Position] = None
         self.no_dwell_break_time: Optional[pd.Timestamp] = None
         self.awaiting_retest_side: Optional[str] = None
+        self.last_breakout_time: Optional[pd.Timestamp] = None
+        self.zone_recovery_cooldown_bars = 10  # Wait 10 bars after breakout before looking for new zones
 
     def _fetch_recent(self, bars: int = 300) -> pd.DataFrame:
         end = pd.Timestamp.utcnow().tz_localize("UTC")
@@ -219,16 +221,44 @@ class SymbolWatcher(threading.Thread):
                     time.sleep(self.scan_every_sec)
                     continue
 
+                # Check if we're in cooldown period after a breakout
+                current_time = df.index[-1] if not df.empty else pd.Timestamp.utcnow()
+                if self.last_breakout_time is not None:
+                    bars_since_breakout = len(df[df.index > self.last_breakout_time])
+                    if bars_since_breakout < self.zone_recovery_cooldown_bars:
+                        time.sleep(self.scan_every_sec)
+                        continue
+
                 z = detect_zone(df)
                 if z is None:
-                    logger.info(f"{self.symbol}: candidate zone vanished; stopping watcher")
-                    break
+                    # Zone vanished - check if we should wait for recovery or exit
+                    if self.last_breakout_time is not None:
+                        bars_since_breakout = len(df[df.index > self.last_breakout_time])
+                        if bars_since_breakout < self.zone_recovery_cooldown_bars * 2:  # Extended cooldown for zone recovery
+                            logger.info(f"{self.symbol}: zone vanished, waiting for recovery (bars since breakout: {bars_since_breakout})")
+                            time.sleep(self.scan_every_sec)
+                            continue
+                        else:
+                            logger.info(f"{self.symbol}: zone vanished after extended cooldown; stopping watcher")
+                            break
+                    else:
+                        logger.info(f"{self.symbol}: candidate zone vanished; stopping watcher")
+                        break
+                
+                # Reset breakout time if we found a new zone
+                if self.last_breakout_time is not None:
+                    self.last_breakout_time = None
+                    logger.info(f"{self.symbol}: new zone detected after false breakout")
+                
                 if self.candidate_zone is None or (z.end_idx != self.candidate_zone.end_idx or z.width != self.candidate_zone.width):
                     self.candidate_zone = z
                     logger.info(f"{self.symbol}: candidate refresh width={z.width:.6f} top={z.high_close:.6f} bottom={z.low_close:.6f} touches T/B={z.touches_top}/{z.touches_bottom}")
 
                 pos = self._check_breakout(df, self.candidate_zone)
                 if pos is not None:
+                    # Record breakout time for cooldown
+                    self.last_breakout_time = current_time
+                    
                     if self.max_positions_ref is not None:
                         if self.max_positions_ref.get("open", 0) >= self.max_positions_ref.get("max", 0):
                             logger.warning(f"Max positions reached ({self.max_positions_ref['open']}/{self.max_positions_ref['max']}), skipping entry {pos.side} {pos.symbol}")

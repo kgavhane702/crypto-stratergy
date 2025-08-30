@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 
 import os
 import pandas as pd
-from binance.spot import Spot
+from binance.um_futures import UMFutures
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from ..config import get_settings, Settings
@@ -16,10 +16,21 @@ logger = get_logger(__name__)
 class BinanceDataClient:
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
-        self.client = Spot(
-            api_key=self.settings.binance_api_key,
-            api_secret=self.settings.binance_api_secret,
-            base_url=self.settings.binance_base_url,
+        
+        # Choose API credentials based on testnet setting
+        if self.settings.use_testnet:
+            api_key = self.settings.binance_testnet_api_key
+            api_secret = self.settings.binance_testnet_api_secret
+            base_url = self.settings.binance_testnet_url
+        else:
+            api_key = self.settings.binance_api_key
+            api_secret = self.settings.binance_api_secret
+            base_url = self.settings.binance_base_url
+            
+        self.client = UMFutures(
+            key=api_key,
+            secret=api_secret,
+            base_url=base_url,
         )
 
     @retry(wait=wait_exponential(multiplier=1, min=1, max=30), stop=stop_after_attempt(5), reraise=True)

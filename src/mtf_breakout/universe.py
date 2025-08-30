@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from binance.spot import Spot
+from binance.um_futures import UMFutures
 
 from .config import get_settings
 from .utils.logger import get_logger
@@ -12,10 +12,21 @@ logger = get_logger(__name__)
 
 def get_top_usdt_symbols(n: int) -> List[str]:
     settings = get_settings()
-    client = Spot(
-        api_key=settings.binance_api_key,
-        api_secret=settings.binance_api_secret,
-        base_url=settings.binance_base_url,
+    
+    # Choose API credentials based on testnet setting
+    if settings.use_testnet:
+        api_key = settings.binance_testnet_api_key
+        api_secret = settings.binance_testnet_api_secret
+        base_url = settings.binance_testnet_url
+    else:
+        api_key = settings.binance_api_key
+        api_secret = settings.binance_api_secret
+        base_url = settings.binance_base_url
+        
+    client = UMFutures(
+        key=api_key,
+        secret=api_secret,
+        base_url=base_url,
     )
 
     tickers = client.ticker_24hr()
