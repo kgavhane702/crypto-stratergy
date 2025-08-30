@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite
+*.db
+*.log
+.env
+.env.*
+.git
+.gitignore
+.vscode
+.idea
+.venv
+venv
+build
+cache
+.dist
+node_modules
+__snapshots__
+.DS_Store
+Thumbs.db
+# Keep env.txt (copied explicitly if desired)

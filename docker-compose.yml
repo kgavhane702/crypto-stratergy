@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  app:
+    build: .
+    container_name: mtf_breakout
+    restart: unless-stopped
+    volumes:
+      - ./env.txt:/app/env.txt:ro
+      - ./data:/app/data
+      - ./exports:/app/exports
+    command: ["python", "runner.py"]
