@@ -56,6 +56,8 @@ class SymbolWatcher(threading.Thread):
         self.awaiting_retest_side: Optional[str] = None
         self.last_breakout_time: Optional[pd.Timestamp] = None
         self.zone_recovery_cooldown_bars = 10  # Wait 10 bars after breakout before looking for new zones
+        self.position_exit_time: Optional[pd.Timestamp] = None
+        self.position_exit_cooldown_bars = 5  # Wait 5 bars after position exit before new entries
 
     def _fetch_recent(self, bars: int = 300) -> pd.DataFrame:
         end = pd.Timestamp.utcnow().tz_localize("UTC")
@@ -217,12 +219,26 @@ class SymbolWatcher(threading.Thread):
                     time.sleep(self.scan_every_sec)
                     continue
 
+                # Check if we have an open position and monitor for exit
                 if self.open_position is not None:
+                    # TODO: Implement position exit monitoring (SL hit, target hit, etc.)
+                    # For now, just continue monitoring
                     time.sleep(self.scan_every_sec)
                     continue
 
-                # Check if we're in cooldown period after a breakout
+                # Check if we're in cooldown period after position exit
                 current_time = df.index[-1] if not df.empty else pd.Timestamp.utcnow()
+                if self.position_exit_time is not None:
+                    bars_since_exit = len(df[df.index > self.position_exit_time])
+                    if bars_since_exit < self.position_exit_cooldown_bars:
+                        time.sleep(self.scan_every_sec)
+                        continue
+                    else:
+                        # Reset exit time after cooldown
+                        self.position_exit_time = None
+                        logger.info(f"{self.symbol}: position exit cooldown completed, resuming monitoring")
+
+                # Check if we're in cooldown period after a breakout
                 if self.last_breakout_time is not None:
                     bars_since_breakout = len(df[df.index > self.last_breakout_time])
                     if bars_since_breakout < self.zone_recovery_cooldown_bars:
@@ -266,11 +282,11 @@ class SymbolWatcher(threading.Thread):
                             self.max_positions_ref["open"] = self.max_positions_ref.get("open", 0) + 1
                             self.open_position = pos
                             self._execute_trade(pos)
-                            break
+                            # Don't break - continue monitoring for position management
                     else:
                         self.open_position = pos
                         self._execute_trade(pos)
-                        break
+                        # Don't break - continue monitoring for position management
 
             except Exception as e:
                 logger.exception(f"{self.symbol}: exception in watcher loop: {e}")
@@ -280,6 +296,24 @@ class SymbolWatcher(threading.Thread):
             time.sleep(self.scan_every_sec)
 
         logger.info(f"Watcher exit: {self.symbol}")
+
+    def _handle_position_exit(self, exit_reason: str) -> None:
+        """Handle position exit and reset for new opportunities."""
+        if self.open_position is not None:
+            logger.info(f"{self.symbol}: position exited ({exit_reason}) - {self.open_position.side} @ {self.open_position.entry_price}")
+            
+            # Update position count
+            if self.max_positions_ref is not None:
+                self.max_positions_ref["open"] = max(0, self.max_positions_ref.get("open", 0) - 1)
+            
+            # Record exit time for cooldown
+            self.position_exit_time = pd.Timestamp.utcnow()
+            
+            # Reset position
+            self.open_position = None
+            
+            # Update dashboard if needed
+            # TODO: Update dashboard with exit information
 
     def stop(self) -> None:
         self.stop_event.set()
