@@ -22,24 +22,41 @@ class Summary:
     sharpe: float
     trade_count: int
     avg_holding_minutes: float
+    total_pnl: float
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
 
 
 def compute_summary(trades: List[Trade]) -> Summary:
     if not trades:
-        return Summary(0, 0, 0, 0, 0, 0, 0, 0, 0)
+        return Summary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    
+    # Calculate P&L and other metrics
+    total_pnl = 0.0
+    winning_trades = 0
+    losing_trades = 0
     rows = []
+    
     for t in trades:
         if t.exit_price is None:
             continue
         direction = 1 if t.side == "LONG" else -1
         pnl = direction * (t.exit_price - t.entry_price)
+        total_pnl += pnl
+        
+        if pnl > 0:
+            winning_trades += 1
+        elif pnl < 0:
+            losing_trades += 1
+            
         risk = abs(t.entry_price - t.sl_price)
         r = pnl / risk if risk > 0 else 0
         hold_min = (pd.Timestamp(t.exit_time) - pd.Timestamp(t.entry_time)).total_seconds() / 60.0
         rows.append((r, hold_min))
 
     if not rows:
-        return Summary(0, 0, 0, 0, 0, 0, 0, 0, 0)
+        return Summary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
     r_vals = np.array([r for r, _ in rows])
     wins = r_vals[r_vals > 0]
@@ -60,7 +77,10 @@ def compute_summary(trades: List[Trade]) -> Summary:
 
     avg_hold = float(np.array([h for _, h in rows]).mean())
 
-    return Summary(win_rate, profit_factor, 0.0, max_dd, avg_r, expectancy, sharpe, len(rows), avg_hold)
+    return Summary(
+        win_rate, profit_factor, 0.0, max_dd, avg_r, expectancy, sharpe, 
+        len(rows), avg_hold, total_pnl, len(trades), winning_trades, losing_trades
+    )
 
 
 def plot_equity(trades: List[Trade], path: str) -> None:

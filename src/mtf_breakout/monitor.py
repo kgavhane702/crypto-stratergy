@@ -60,7 +60,7 @@ class SymbolWatcher(threading.Thread):
         self.position_exit_cooldown_bars = 5  # Wait 5 bars after position exit before new entries
 
     def _fetch_recent(self, bars: int = 300) -> pd.DataFrame:
-        end = pd.Timestamp.utcnow().tz_localize("UTC")
+        end = pd.Timestamp.utcnow()
         start = end - pd.Timedelta(minutes=5 * bars)
         df = self.client.get_klines_range(
             self.symbol,
@@ -134,7 +134,8 @@ class SymbolWatcher(threading.Thread):
                 sl = float(last.get("low", last["close"]))
                 trend_aligned = (perm == "LONG")
                 size_type = "TREND-ALIGNED" if trend_aligned else "COUNTER-TREND"
-                logger.info(f"RANGE BREAKOUT: LONG entry {self.symbol} close={last['close']:.6f} > {zone.high_close:.6f}+{buf:.6f} (dwell={zone.dwell_bars} bars, {size_type})")
+                trend_emoji = "🟢" if trend_aligned else "🔴"
+                logger.info(f"🚀 RANGE BREAKOUT: LONG entry {self.symbol} close={last['close']:.6f} > {zone.high_close:.6f}+{buf:.6f} (dwell={zone.dwell_bars} bars, {size_type}) {trend_emoji}")
                 return Position(symbol=self.symbol, side="LONG", entry_price=float(last["close"]), sl_price=sl, time=last.name, trend_aligned=trend_aligned)
             else:
                 # No dwell - wait for retest
@@ -145,20 +146,21 @@ class SymbolWatcher(threading.Thread):
 
         # SHORT BREAKDOWN: Take entry regardless of trend if dwell criteria met
         if float(last["close"]) < zone.low_close - buf and zone.touches_bottom >= 3:
-            dwell = zone.dwell_bars >= s.dwell_bars
-            if dwell:
-                # Dwell criteria met - take immediate entry
-                sl = float(last.get("high", last["close"]))
-                trend_aligned = (perm == "SHORT")
-                size_type = "TREND-ALIGNED" if trend_aligned else "COUNTER-TREND"
-                logger.info(f"RANGE BREAKDOWN: SHORT entry {self.symbol} close={last['close']:.6f} < {zone.low_close:.6f}-{buf:.6f} (dwell={zone.dwell_bars} bars, {size_type})")
-                return Position(symbol=self.symbol, side="SHORT", entry_price=float(last["close"]), sl_price=sl, time=last.name, trend_aligned=trend_aligned)
-            else:
-                # No dwell - wait for retest
-                self.no_dwell_break_time = last.name
-                self.awaiting_retest_side = "SHORT"
-                logger.info(f"{self.symbol}: no-dwell SHORT breakdown detected, waiting for retest (window {s.retest_window_bars} bars)")
-                return None
+                    dwell = zone.dwell_bars >= s.dwell_bars
+                    if dwell:
+                        # Dwell criteria met - take immediate entry
+                        sl = float(last.get("high", last["close"]))
+                        trend_aligned = (perm == "SHORT")
+                        size_type = "TREND-ALIGNED" if trend_aligned else "COUNTER-TREND"
+                        trend_emoji = "🟢" if trend_aligned else "🔴"
+                        logger.info(f"📉 RANGE BREAKDOWN: SHORT entry {self.symbol} close={last['close']:.6f} < {zone.low_close:.6f}-{buf:.6f} (dwell={zone.dwell_bars} bars, {size_type}) {trend_emoji}")
+                        return Position(symbol=self.symbol, side="SHORT", entry_price=float(last["close"]), sl_price=sl, time=last.name, trend_aligned=trend_aligned)
+                    else:
+                        # No dwell - wait for retest
+                        self.no_dwell_break_time = last.name
+                        self.awaiting_retest_side = "SHORT"
+                        logger.info(f"{self.symbol}: no-dwell SHORT breakdown detected, waiting for retest (window {s.retest_window_bars} bars)")
+                        return None
 
         # Check for retest confirmations (only for no-dwell breakouts)
         ret = self._check_retest_logic(df, last, zone, perm)
@@ -268,7 +270,14 @@ class SymbolWatcher(threading.Thread):
                 
                 if self.candidate_zone is None or (z.end_idx != self.candidate_zone.end_idx or z.width != self.candidate_zone.width):
                     self.candidate_zone = z
-                    logger.info(f"{self.symbol}: candidate refresh width={z.width:.6f} top={z.high_close:.6f} bottom={z.low_close:.6f} touches T/B={z.touches_top}/{z.touches_bottom}")
+                    
+                    # Get trend information
+                    trend_perm = self._permission(df)
+                    trend_emoji = "🟢" if trend_perm == "LONG" else "🔴" if trend_perm == "SHORT" else "🟡"
+                    trend_text = f"{trend_emoji} {trend_perm}" if trend_perm != "NONE" else "🟡 NEUTRAL"
+                    
+                    # Show T/B format using total touches with proper separation
+                    logger.info(f"{self.symbol}: candidate refresh width={z.width:.6f} top={z.high_close:.6f} bottom={z.low_close:.6f} touches T/B={z.total_touches}/{z.dwell_bars} | {trend_text}")
 
                 pos = self._check_breakout(df, self.candidate_zone)
                 if pos is not None:
@@ -329,14 +338,19 @@ class GlobalScanner(threading.Thread):
         self.client = BinanceDataClient(self.settings)
         self.stop_event = threading.Event()
         self.candidate_cb = candidate_cb
+        self.last_scan_time = ""
+        self.total_symbols_scanned = 0
 
     def run(self) -> None:
         logger.info(f"GlobalScanner start (interval={self.interval}, scan_every={self.scan_every_sec}s)")
         while not self.stop_event.is_set():
             try:
                 candidates: List[CandidateInfo] = []
+                self.total_symbols_scanned = len(self.symbols)
+                self.last_scan_time = pd.Timestamp.utcnow().strftime("%H:%M:%S")
+                
                 for sym in self.symbols:
-                    end = pd.Timestamp.utcnow().tz_localize("UTC")
+                    end = pd.Timestamp.utcnow()
                     start = end - pd.Timedelta(minutes=5 * max(60, self.settings.dwell_bars + 20))
                     df = self.client.get_klines_range(sym, self.interval, int(start.value // 1_000_000), int(end.value // 1_000_000))
                     if df.empty:
@@ -346,10 +360,9 @@ class GlobalScanner(threading.Thread):
                     z = detect_zone(df)
                     if z is None:
                         continue
-                    if z.touches_top >= 2 or z.touches_bottom >= 2:
-                        max_touches = max(z.touches_top, z.touches_bottom)
-                        priority_score = max_touches / (z.width + 0.001)  # Higher touches, tighter zone = higher priority
-                        candidates.append(CandidateInfo(sym, max_touches, z.width, priority_score))
+                    if z.total_touches >= 2:  # Use total touches with proper separation
+                        priority_score = z.total_touches / (z.width + 0.001)  # Higher touches, tighter zone = higher priority
+                        candidates.append(CandidateInfo(sym, z.total_touches, z.width, priority_score))
                 
                 # Sort by priority and call callback for top candidates
                 candidates.sort(key=lambda x: x.priority_score, reverse=True)
@@ -407,10 +420,22 @@ class Monitor:
         # Start dashboard
         dashboard.start()
         
-        # Setup futures account
+        # Setup futures account and log balance
         if not self.settings.dry_run:
             self.futures_client.setup_all_symbols(self.symbols)
             self.futures_client.clear_orphan_positions()
+            
+            # Log account balance
+            try:
+                balance = self.futures_client.get_account_info()
+                usdt_balance = balance.get("USDT", {})
+                available_balance = float(usdt_balance.get("free", 0))
+                total_balance = float(usdt_balance.get("total", 0))
+                logger.info(f"💰 Account Balance - Available: ${available_balance:.2f} USDT, Total: ${total_balance:.2f} USDT")
+            except Exception as e:
+                logger.warning(f"Failed to get account balance: {e}")
+        else:
+            logger.info("🔍 DRY RUN MODE - No real trades will be executed")
         
         self.scanner.start()
         threading.Thread(target=self._maintenance_loop, daemon=True).start()
@@ -418,10 +443,38 @@ class Monitor:
     def _maintenance_loop(self) -> None:
         while True:
             try:
+                # Update dashboard with system information
+                self._update_dashboard_info()
+                
+                # Cleanup dead watchers
                 self._cleanup_watchers()
+                
+                time.sleep(5)  # Update every 5 seconds
+            except Exception as e:
+                logger.exception(f"Maintenance loop exception: {e}")
                 time.sleep(5)
-            except Exception:
-                time.sleep(5)
+
+    def _update_dashboard_info(self) -> None:
+        """Update dashboard with current system information."""
+        try:
+            with self.lock:
+                monitor_pool_size = len(self.watchers)
+                priority_pool_size = len(self.candidate_symbols)
+                active_zones_count = len([w for w in self.watchers.values() if w.candidate_zone is not None])
+                
+                scanner_status = "RUNNING" if self.scanner.is_alive() else "STOPPED"
+                
+                dashboard.update_system_info(
+                    global_scanner_status=scanner_status,
+                    monitor_pool_size=monitor_pool_size,
+                    priority_pool_size=priority_pool_size,
+                    active_zones_count=active_zones_count,
+                    total_symbols_scanned=self.scanner.total_symbols_scanned,
+                    last_scan_time=self.scanner.last_scan_time,
+                    candidates_in_queue=len(self.candidate_symbols)
+                )
+        except Exception as e:
+            logger.error(f"Failed to update dashboard info: {e}")
 
     def stop(self) -> None:
         logger.info("Monitor stopping...")

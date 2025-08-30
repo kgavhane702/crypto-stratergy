@@ -43,7 +43,16 @@ class Backtester:
         self.trades: List[Trade] = []
 
     def _fetch_5m(self, symbol: str) -> pd.DataFrame:
-        return self.client.get_klines_range(symbol, self.interval, int(self.start.value // 1_000_000), int(self.end.value // 1_000_000))
+        try:
+            df = self.client.get_klines_range(symbol, self.interval, int(self.start.value // 1_000_000), int(self.end.value // 1_000_000))
+            if df.empty:
+                logger.warning(f"{symbol}: No data available for period {self.start} to {self.end}")
+            else:
+                logger.info(f"{symbol}: Loaded {len(df)} bars from {df.index[0]} to {df.index[-1]}")
+            return df
+        except Exception as e:
+            logger.error(f"{symbol}: Failed to fetch data: {e}")
+            return pd.DataFrame()
 
     def run(self) -> None:
         for sym in self.symbols:
@@ -67,7 +76,7 @@ class Backtester:
 
                 # Skip incomplete bars at the end by time proximity
                 if i == len(df) - 1:
-                    now = pd.Timestamp.utcnow().tz_localize("UTC")
+                    now = pd.Timestamp.utcnow()
                     if (now - window.index[-1]) < pd.Timedelta(minutes=5):
                         break
 

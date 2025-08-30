@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from binance.um_futures import UMFutures
+import ccxt
 
 from .config import get_settings
 from .utils.logger import get_logger
@@ -13,32 +13,37 @@ logger = get_logger(__name__)
 def get_top_usdt_symbols(n: int) -> List[str]:
     settings = get_settings()
     
-    # Choose API credentials based on testnet setting
+    # Use CCXT for symbol selection
+    exchange = ccxt.binance({
+        'apiKey': settings.binance_api_key,
+        'secret': settings.binance_api_secret,
+        'sandbox': settings.use_testnet,
+        'enableRateLimit': True,
+    })
+    
     if settings.use_testnet:
-        api_key = settings.binance_testnet_api_key
-        api_secret = settings.binance_testnet_api_secret
-        base_url = settings.binance_testnet_url
-    else:
-        api_key = settings.binance_api_key
-        api_secret = settings.binance_api_secret
-        base_url = settings.binance_base_url
+        exchange.set_sandbox_mode(True)
+
+    try:
+        tickers = exchange.fetch_tickers()
+        # Keep symbols in CCXT format (e.g., "BTC/USDT")
+        filtered = [symbol for symbol in tickers.keys() if symbol.endswith("USDT")]
+        if not filtered:
+            logger.warning("No USDT pairs found, using fallback symbols")
+            return ["BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT"]
         
-    client = UMFutures(
-        key=api_key,
-        secret=api_secret,
-        base_url=base_url,
-    )
-
-    tickers = client.ticker_24hr()
-    filtered = [t for t in tickers if isinstance(t, dict) and str(t.get("symbol", "")).endswith("USDT")]
-
-    def _qv(x: dict) -> float:
-        try:
-            return float(x.get("quoteVolume", 0.0))
-        except Exception:
-            return 0.0
-
-    filtered.sort(key=_qv, reverse=True)
-    symbols = [t["symbol"] for t in filtered[:max(0, n)]]
-    logger.info(f"Selected top {n} USDT symbols by quote volume: {symbols}")
-    return symbols
+        # Sort by 24h volume
+        def get_volume(symbol):
+            try:
+                return float(tickers[symbol].get('quoteVolume', 0))
+            except:
+                return 0
+        
+        filtered.sort(key=get_volume, reverse=True)
+        symbols = filtered[:n]
+        logger.info(f"Selected top {n} USDT symbols by quote volume: {symbols}")
+        return symbols
+    except Exception as e:
+        logger.error(f"Failed to fetch symbols: {e}")
+        # Fallback to default symbols
+        return ["BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "SOLUSDT"]

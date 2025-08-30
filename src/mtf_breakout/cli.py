@@ -62,8 +62,7 @@ def cmd_monitor(args: argparse.Namespace) -> None:
 
     try:
         while True:
-            pd.Timestamp.utcnow()
-            pass
+            time.sleep(1)
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received; stopping monitor...")
         monitor.stop()

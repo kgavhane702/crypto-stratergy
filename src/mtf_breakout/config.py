@@ -20,8 +20,8 @@ class Settings:
 
     # App
     app_log_level: str = "INFO"
-    data_dir: str = "./data"
-    export_dir: str = "./exports"
+    data_dir: str = "/app/data"
+    export_dir: str = "/app/exports"
     dashboard_port: int = 8080
 
     # Strategy defaults
@@ -45,10 +45,10 @@ class Settings:
 
     # Universe
     default_symbols: List[str] = field(default_factory=lambda: [
-        "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-        "SOLUSDT", "DOGEUSDT", "TRXUSDT", "MATICUSDT", "DOTUSDT",
-        "LTCUSDT", "SHIBUSDT", "AVAXUSDT", "UNIUSDT", "LINKUSDT",
-        "ATOMUSDT", "XMRUSDT", "ETCUSDT", "XLMUSDT", "NEARUSDT",
+        "BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT",
+        "SOL/USDT", "DOGE/USDT", "TRX/USDT", "MATIC/USDT", "DOT/USDT",
+        "LTC/USDT", "SHIB/USDT", "AVAX/USDT", "UNI/USDT", "LINK/USDT",
+        "ATOM/USDT", "XMR/USDT", "ETC/USDT", "XLM/USDT", "NEAR/USDT",
     ])
 
     # Timeframes
@@ -91,8 +91,8 @@ def get_settings() -> Settings:
         binance_base_url=_get("BINANCE_BASE_URL", "https://api.binance.com"),
         binance_testnet_url=_get("BINANCE_TESTNET_URL", "https://testnet.binancefuture.com"),
         app_log_level=_get("APP_LOG_LEVEL", "INFO"),
-        data_dir=_get("DATA_DIR", "./data"),
-        export_dir=_get("EXPORT_DIR", "./exports"),
+        data_dir=_get("DATA_DIR", "/app/data"),
+        export_dir=_get("EXPORT_DIR", "/app/exports"),
         dashboard_port=int(_get("DASHBOARD_PORT", "8080")),
         dwell_bars=int(_get("DWELL_BARS", "18")),
         touch_separation_bars=int(_get("TOUCH_SEPARATION_BARS", "3")),

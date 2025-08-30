@@ -1,11 +1,15 @@
+ccxt
 pandas
 numpy
 python-dotenv
-binance-connector
+ta
+fastapi
+uvicorn
+jinja2
+pytest
 tenacity
 tqdm
 matplotlib
 requests
-pytest
 pydantic
 pydantic-settings

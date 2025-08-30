@@ -18,6 +18,7 @@ class Zone:
     width: float
     touches_top: int
     touches_bottom: int
+    total_touches: int  # Total touches with proper separation
     atr: float
     dwell_bars: int
 
@@ -50,23 +51,27 @@ def detect_zone(df: pd.DataFrame) -> Optional[Zone]:
 
     touches_top = 0
     touches_bottom = 0
-    last_touch_top_i = -10_000
-    last_touch_bottom_i = -10_000
+    total_touches = 0
+    last_touch_i = -10_000  # Track last touch of any type
 
     for i in range(len(look)):
         row = look.iloc[i]
         hi = float(row.get("high", row["close"]))
         lo = float(row.get("low", row["close"]))
-        # top touch
+        
+        # Check for any touch (top or bottom)
+        touched = False
         if hi >= top_level - buf:
-            if i - last_touch_top_i >= s.touch_separation_bars:
-                touches_top += 1
-                last_touch_top_i = i
-        # bottom touch
+            touches_top += 1
+            touched = True
         if lo <= bot_level + buf:
-            if i - last_touch_bottom_i >= s.touch_separation_bars:
-                touches_bottom += 1
-                last_touch_bottom_i = i
+            touches_bottom += 1
+            touched = True
+            
+        # Count total touches with proper separation
+        if touched and i - last_touch_i >= s.touch_separation_bars:
+            total_touches += 1
+            last_touch_i = i
 
     return Zone(
         start_idx=len(df) - window,
@@ -76,6 +81,7 @@ def detect_zone(df: pd.DataFrame) -> Optional[Zone]:
         width=width,
         touches_top=touches_top,
         touches_bottom=touches_bottom,
+        total_touches=total_touches,
         atr=float(a),
         dwell_bars=window,
     )

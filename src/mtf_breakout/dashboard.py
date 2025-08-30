@@ -54,6 +54,7 @@ class DashboardState:
     trades: List[Trade]
     zones: List[ZoneInfo]
     stats: Dict
+    system_info: Dict[str, Any]  # Global scanner and monitor pool info
     last_update: str
 
 
@@ -74,6 +75,15 @@ class Dashboard:
             "avg_loss": 0.0,
             "max_drawdown": 0.0,
             "sharpe_ratio": 0.0,
+        }
+        self.system_info = {
+            "global_scanner_status": "STOPPED",
+            "monitor_pool_size": 0,
+            "priority_pool_size": 0,
+            "total_symbols_scanned": 0,
+            "last_scan_time": "",
+            "active_zones_count": 0,
+            "candidates_in_queue": 0,
         }
         self.lock = threading.Lock()
         self.server: Optional[HTTPServer] = None
@@ -136,8 +146,16 @@ class Dashboard:
                 trades=list(self.trades.values()),
                 zones=list(self.zones.values()),
                 stats=self.stats.copy(),
+                system_info=self.system_info.copy(),
                 last_update=datetime.now().isoformat()
             )
+
+    def update_system_info(self, **kwargs) -> None:
+        """Update system information."""
+        with self.lock:
+            for key, value in kwargs.items():
+                if key in self.system_info:
+                    self.system_info[key] = value
 
     def start(self) -> None:
         """Start the dashboard server."""
@@ -254,10 +272,96 @@ DASHBOARD_HTML = """
         }
         
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 20px;
         }
+        
+        /* Navigation Menu */
+        .nav-menu {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        
+        .nav-menu ul {
+            list-style: none;
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+        }
+        
+        .nav-menu li {
+            position: relative;
+        }
+        
+        .nav-menu a {
+            text-decoration: none;
+            color: #1e3c72;
+            font-weight: 600;
+            padding: 10px 15px;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            display: block;
+        }
+        
+        .nav-menu a:hover {
+            background: #1e3c72;
+            color: white;
+        }
+        
+        .nav-menu a.active {
+            background: #1e3c72;
+            color: white;
+        }
+        
+        /* System Status Bar */
+        .system-status {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        
+        .system-status h2 {
+            color: #1e3c72;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .status-item {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        }
+        
+        .status-item h4 {
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+        
+        .status-item .value {
+            font-size: 20px;
+            font-weight: bold;
+            color: #1e3c72;
+        }
+        
+        .status-item .status-running { color: #28a745; }
+        .status-item .status-stopped { color: #dc3545; }
+        .status-item .status-warning { color: #ffc107; }
         
         .header {
             background: rgba(255, 255, 255, 0.95);
@@ -433,48 +537,125 @@ DASHBOARD_HTML = """
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🚀 MTF Breakout Strategy Dashboard</h1>
-            <p style="text-align: center; color: #666;">Real-time monitoring and performance tracking</p>
+        <!-- Navigation Menu -->
+        <div class="nav-menu">
+            <ul>
+                <li><a href="#" class="active" onclick="showSection('overview')">📊 Overview</a></li>
+                <li><a href="#" onclick="showSection('trades')">💰 Trades</a></li>
+                <li><a href="#" onclick="showSection('zones')">🎯 Zones</a></li>
+                <li><a href="#" onclick="showSection('system')">⚙️ System</a></li>
+                <li><a href="#" onclick="showSection('stats')">📈 Statistics</a></li>
+            </ul>
         </div>
-        
-        <div class="status-bar">
-            <div class="auto-refresh">
-                <input type="checkbox" id="autoRefresh" checked>
-                <label for="autoRefresh">Auto-refresh (5s)</label>
+
+        <!-- System Status Bar -->
+        <div class="system-status">
+            <h2>🖥️ System Status</h2>
+            <div class="status-grid">
+                <div class="status-item">
+                    <h4>Global Scanner</h4>
+                    <div id="scannerStatus" class="value status-stopped">STOPPED</div>
+                </div>
+                <div class="status-item">
+                    <h4>Monitor Pool</h4>
+                    <div id="monitorPoolSize" class="value">0</div>
+                </div>
+                <div class="status-item">
+                    <h4>Priority Pool</h4>
+                    <div id="priorityPoolSize" class="value">0</div>
+                </div>
+                <div class="status-item">
+                    <h4>Active Zones</h4>
+                    <div id="activeZonesCount" class="value">0</div>
+                </div>
+                <div class="status-item">
+                    <h4>Symbols Scanned</h4>
+                    <div id="symbolsScanned" class="value">0</div>
+                </div>
+                <div class="status-item">
+                    <h4>Last Scan</h4>
+                    <div id="lastScanTime" class="value">-</div>
+                </div>
             </div>
-            <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Now</button>
-            <div id="lastUpdate" style="color: #666; font-size: 14px;"></div>
         </div>
-        
-        <div class="status-bar">
-            <div class="stat-card">
-                <h3>Total P&L</h3>
-                <div id="totalPnl" class="value">$0.00</div>
-            </div>
-            <div class="stat-card">
-                <h3>Win Rate</h3>
-                <div id="winRate" class="value">0%</div>
-            </div>
-            <div class="stat-card">
-                <h3>Open Trades</h3>
-                <div id="openTrades" class="value">0</div>
-            </div>
-            <div class="stat-card">
-                <h3>Total Trades</h3>
-                <div id="totalTrades" class="value">0</div>
-            </div>
-        </div>
-        
-        <div class="grid">
-            <div class="card">
-                <h2>📊 Active Trades</h2>
-                <div id="tradesTable"></div>
+
+        <!-- Overview Section -->
+        <div id="overview-section" class="section">
+            <div class="header">
+                <h1>🚀 MTF Breakout Strategy Dashboard</h1>
+                <p style="text-align: center; color: #666;">Real-time monitoring and performance tracking</p>
             </div>
             
+            <div class="status-bar">
+                <div class="auto-refresh">
+                    <input type="checkbox" id="autoRefresh" checked>
+                    <label for="autoRefresh">Auto-refresh (5s)</label>
+                </div>
+                <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Now</button>
+                <div id="lastUpdate" style="color: #666; font-size: 14px;"></div>
+            </div>
+            
+            <div class="status-bar">
+                <div class="stat-card">
+                    <h3>Total P&L</h3>
+                    <div id="totalPnl" class="value">$0.00</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Win Rate</h3>
+                    <div id="winRate" class="value">0%</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Open Trades</h3>
+                    <div id="openTrades" class="value">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Trades</h3>
+                    <div id="totalTrades" class="value">0</div>
+                </div>
+            </div>
+            
+            <div class="grid">
+                <div class="card">
+                    <h2>📊 Recent Trades</h2>
+                    <div id="recentTradesTable"></div>
+                </div>
+                
+                <div class="card">
+                    <h2>🎯 Active Zones</h2>
+                    <div id="activeZonesGrid" class="zones-grid"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trades Section -->
+        <div id="trades-section" class="section" style="display: none;">
             <div class="card">
-                <h2>🎯 Monitor Zones</h2>
-                <div id="zonesGrid" class="zones-grid"></div>
+                <h2>💰 All Trades</h2>
+                <div id="allTradesTable"></div>
+            </div>
+        </div>
+
+        <!-- Zones Section -->
+        <div id="zones-section" class="section" style="display: none;">
+            <div class="card">
+                <h2>🎯 All Monitor Zones</h2>
+                <div id="allZonesGrid" class="zones-grid"></div>
+            </div>
+        </div>
+
+        <!-- System Section -->
+        <div id="system-section" class="section" style="display: none;">
+            <div class="card">
+                <h2>⚙️ System Information</h2>
+                <div id="systemInfo"></div>
+            </div>
+        </div>
+
+        <!-- Statistics Section -->
+        <div id="stats-section" class="section" style="display: none;">
+            <div class="card">
+                <h2>📈 Performance Statistics</h2>
+                <div id="performanceStats"></div>
             </div>
         </div>
     </div>
@@ -522,6 +703,9 @@ DASHBOARD_HTML = """
             document.getElementById('openTrades').textContent = data.stats.open_trades;
             document.getElementById('totalTrades').textContent = data.stats.total_trades;
             
+            // Update system information
+            updateSystemInfo(data.system_info);
+            
             // Update last update time
             document.getElementById('lastUpdate').textContent = 'Last update: ' + new Date().toLocaleTimeString();
             
@@ -530,6 +714,35 @@ DASHBOARD_HTML = """
             
             // Update zones grid
             updateZonesGrid(data.zones);
+        }
+
+        function updateSystemInfo(systemInfo) {
+            // Update system status
+            const scannerStatus = document.getElementById('scannerStatus');
+            scannerStatus.textContent = systemInfo.global_scanner_status;
+            scannerStatus.className = 'value status-' + systemInfo.global_scanner_status.toLowerCase();
+            
+            document.getElementById('monitorPoolSize').textContent = systemInfo.monitor_pool_size;
+            document.getElementById('priorityPoolSize').textContent = systemInfo.priority_pool_size;
+            document.getElementById('activeZonesCount').textContent = systemInfo.active_zones_count;
+            document.getElementById('symbolsScanned').textContent = systemInfo.total_symbols_scanned;
+            document.getElementById('lastScanTime').textContent = systemInfo.last_scan_time || '-';
+        }
+
+        function showSection(sectionName) {
+            // Hide all sections
+            document.querySelectorAll('.section').forEach(section => {
+                section.style.display = 'none';
+            });
+            
+            // Show selected section
+            document.getElementById(sectionName + '-section').style.display = 'block';
+            
+            // Update navigation
+            document.querySelectorAll('.nav-menu a').forEach(link => {
+                link.classList.remove('active');
+            });
+            event.target.classList.add('active');
         }
         
         function updateTradesTable(trades) {

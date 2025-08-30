@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 
 import os
 import pandas as pd
-from binance.um_futures import UMFutures
+import ccxt
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from ..config import get_settings, Settings
@@ -17,21 +17,34 @@ class BinanceDataClient:
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
         
-        # Choose API credentials based on testnet setting
+        # Use CCXT for data fetching
+        self.exchange = ccxt.binance({
+            'apiKey': self.settings.binance_api_key,
+            'secret': self.settings.binance_api_secret,
+            'sandbox': self.settings.use_testnet,
+            'enableRateLimit': True,
+        })
+        
         if self.settings.use_testnet:
-            api_key = self.settings.binance_testnet_api_key
-            api_secret = self.settings.binance_testnet_api_secret
-            base_url = self.settings.binance_testnet_url
+            self.exchange.set_sandbox_mode(True)
+            logger.info("Using Binance Testnet via CCXT")
         else:
-            api_key = self.settings.binance_api_key
-            api_secret = self.settings.binance_api_secret
-            base_url = self.settings.binance_base_url
-            
-        self.client = UMFutures(
-            key=api_key,
-            secret=api_secret,
-            base_url=base_url,
-        )
+            logger.info("Using Binance Live via CCXT")
+
+    def _convert_interval(self, interval: str) -> str:
+        """Convert interval format for CCXT."""
+        interval_map = {
+            "1m": "1m",
+            "5m": "5m", 
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1h",
+            "4h": "4h",
+            "1d": "1d",
+            "1w": "1w",
+            "1M": "1M"
+        }
+        return interval_map.get(interval, interval)
 
     @retry(wait=wait_exponential(multiplier=1, min=1, max=30), stop=stop_after_attempt(5), reraise=True)
     def get_klines(
@@ -42,43 +55,55 @@ class BinanceDataClient:
         end_time_ms: Optional[int] = None,
         limit: int = 1000,
     ) -> pd.DataFrame:
-        raw = self.client.klines(
-            symbol=symbol,
-            interval=interval,
-            startTime=start_time_ms,
-            endTime=end_time_ms,
-            limit=limit,
-        )
+        # Convert interval format for CCXT
+        ccxt_interval = self._convert_interval(interval)
+        
+        try:
+            raw = self.exchange.fetch_ohlcv(
+                symbol=symbol,
+                timeframe=ccxt_interval,
+                since=start_time_ms,
+                limit=limit,
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+            return pd.DataFrame(
+                columns=["open_time", "open", "high", "low", "close", "volume"]
+            ).set_index("open_time")
+        
         if not raw:
             return pd.DataFrame(
-                columns=[
-                    "open_time", "open", "high", "low", "close", "volume",
-                    "close_time", "quote_volume", "trades",
-                    "taker_base_volume", "taker_quote_volume",
-                ]
+                columns=["open_time", "open", "high", "low", "close", "volume"]
             ).set_index("open_time")
 
-        df = pd.DataFrame(raw, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades",
-            "taker_base_volume", "taker_quote_volume", "ignore",
-        ])
-        df = df.drop(columns=["ignore"])  # type: ignore[assignment]
-
-        num_cols = ["open", "high", "low", "close", "volume", "quote_volume", "taker_base_volume", "taker_quote_volume"]
+        # CCXT returns: [timestamp, open, high, low, close, volume]
+        df = pd.DataFrame(raw, columns=["open_time", "open", "high", "low", "close", "volume"])
+        
+        # Convert to numeric
+        num_cols = ["open", "high", "low", "close", "volume"]
         for c in num_cols:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-        df["trades"] = pd.to_numeric(df["trades"], errors="coerce").astype("Int64")
 
+        # Convert timestamp to datetime
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
         df = df.set_index("open_time").sort_index()
+        
         return df
 
     def _cache_path(self, symbol: str, interval: str) -> str:
-        os.makedirs(self.settings.data_dir, exist_ok=True)
-        fname = f"{symbol}_{interval}.csv"
-        return os.path.join(self.settings.data_dir, fname)
+        # Ensure data directory exists
+        data_dir = self.settings.data_dir
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Failed to create data directory {data_dir}: {e}")
+            # Fallback to current directory
+            data_dir = "."
+        
+        # Clean symbol name for file system (replace / with _)
+        clean_symbol = symbol.replace("/", "_")
+        fname = f"{clean_symbol}_{interval}.csv"
+        return os.path.join(data_dir, fname)
 
     def _read_cache(self, symbol: str, interval: str) -> pd.DataFrame:
         path = self._cache_path(symbol, interval)
@@ -92,8 +117,17 @@ class BinanceDataClient:
         return pd.DataFrame()
 
     def _write_cache(self, symbol: str, interval: str, df: pd.DataFrame) -> None:
-        path = self._cache_path(symbol, interval)
-        df.to_csv(path, index=True)
+        try:
+            path = self._cache_path(symbol, interval)
+            # Ensure the directory exists before writing
+            cache_dir = os.path.dirname(path)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            df.to_csv(path, index=True)
+            logger.debug(f"Successfully wrote cache for {symbol} to {path}")
+        except Exception as e:
+            logger.warning(f"Failed to write cache for {symbol}: {e}")
+            # Continue without caching if there's an issue
 
     def get_klines_range(
         self,
@@ -104,6 +138,18 @@ class BinanceDataClient:
         max_batch: int = 1000,
         use_cache: bool = True,
     ) -> pd.DataFrame:
+        # Ensure data directory exists before any cache operations
+        if use_cache:
+            try:
+                os.makedirs(self.settings.data_dir, exist_ok=True)
+            except Exception as e:
+                logger.warning(f"Failed to create data directory {self.settings.data_dir}: {e}")
+                use_cache = False
+        
+        # Disable caching if we're in a container environment without proper write permissions
+        if use_cache and not os.access(self.settings.data_dir, os.W_OK):
+            logger.warning(f"Caching disabled - no write access to {self.settings.data_dir}")
+            use_cache = False
         frames: list[pd.DataFrame] = []
         next_start = start_time_ms
         while True:
@@ -111,7 +157,7 @@ class BinanceDataClient:
             if df.empty:
                 break
             frames.append(df)
-            last_close_ms = int(df["close_time"].iloc[-1].value // 1_000_000)
+            last_close_ms = int(df.index[-1].value // 1_000_000)
             if last_close_ms >= end_time_ms:
                 break
             next_start = last_close_ms + 1

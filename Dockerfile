@@ -22,6 +22,9 @@ COPY README.md ./
 # Optionally copy env.txt template; real secrets should be mounted at runtime
 COPY env.txt ./env.txt
 
+# Create data and exports directories
+RUN mkdir -p /app/data /app/exports && chmod 755 /app/data /app/exports
+
 # Use src layout without install
 ENV PYTHONPATH=/app/src
 

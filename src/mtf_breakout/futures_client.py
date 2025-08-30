@@ -3,9 +3,7 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Optional
 
-from binance.um_futures import UMFutures
-from binance.lib.utils import config_logging
-from binance.error import ClientError
+import ccxt
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 from .config import get_settings, Settings
@@ -23,29 +21,28 @@ class FuturesClient:
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
         
-        # Choose API credentials based on testnet setting
-        if self.settings.use_testnet:
-            api_key = self.settings.binance_testnet_api_key
-            api_secret = self.settings.binance_testnet_api_secret
-            base_url = self.settings.binance_testnet_url
-            logger.info("Using Binance Testnet API")
-        else:
-            api_key = self.settings.binance_api_key
-            api_secret = self.settings.binance_api_secret
-            base_url = self.settings.binance_base_url
-            logger.info("Using Binance Live API")
+        # Use CCXT for futures trading
+        self.exchange = ccxt.binance({
+            'apiKey': self.settings.binance_api_key,
+            'secret': self.settings.binance_api_secret,
+            'sandbox': self.settings.use_testnet,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'future',  # Use futures market
+            }
+        })
         
-        self.client = UMFutures(
-            key=api_key,
-            secret=api_secret,
-            base_url=base_url,
-        )
+        if self.settings.use_testnet:
+            self.exchange.set_sandbox_mode(True)
+            logger.info("Using Binance Futures Testnet via CCXT")
+        else:
+            logger.info("Using Binance Futures Live via CCXT")
 
     def setup_symbol(self, symbol: str) -> None:
         """Set leverage and margin mode for a symbol."""
         try:
             # Set isolated margin mode
-            _api_call(self.client.change_margin_type, symbol=symbol, marginType="ISOLATED")
+            self.exchange.set_margin_mode('isolated', symbol)
             logger.info(f"Set {symbol} to ISOLATED margin mode")
         except Exception as e:
             if "No need to change margin type" not in str(e):
@@ -53,23 +50,23 @@ class FuturesClient:
 
         try:
             # Set leverage
-            _api_call(self.client.change_leverage, symbol=symbol, leverage=self.settings.leverage)
+            self.exchange.set_leverage(self.settings.leverage, symbol)
             logger.info(f"Set {symbol} leverage to {self.settings.leverage}")
         except Exception as e:
             logger.warning(f"Failed to set leverage for {symbol}: {e}")
 
     def get_account_info(self) -> Dict:
         """Get account info including balance."""
-        return _api_call(self.client.account)
+        return self.exchange.fetch_balance()
 
     def get_position_info(self) -> List[Dict]:
         """Get all positions."""
-        return _api_call(self.client.get_position_info)
+        return self.exchange.fetch_positions()
 
     def calculate_position_size(self, symbol: str, entry_price: float, sl_price: float, trend_aligned: bool = True) -> float:
         """Calculate position size based on trend alignment."""
-        account = self.get_account_info()
-        available_balance = float(account.get("availableBalance", 0))
+        balance = self.get_account_info()
+        available_balance = float(balance.get("USDT", {}).get("free", 0))
         
         # Choose position size based on trend alignment
         if trend_aligned:
@@ -91,42 +88,37 @@ class FuturesClient:
             logger.info(f"DRY-RUN: Would place {side} {quantity} {symbol} @ market")
             return {"dry_run": True}
         
-        return _api_call(
-            self.client.new_order,
+        return self.exchange.create_market_order(
             symbol=symbol,
-            side=side,
-            type="MARKET",
-            quantity=quantity,
+            side=side.lower(),
+            amount=quantity,
         )
 
     def place_stop_loss(self, symbol: str, side: str, quantity: float, stop_price: float) -> Dict:
-        """Place a stop loss order."""
+        """Place stop loss order."""
         if self.settings.dry_run:
-            logger.info(f"DRY-RUN: Would place {side} stop loss {quantity} {symbol} @ {stop_price}")
+            logger.info(f"DRY-RUN: Would place SL {side} {quantity} {symbol} @ {stop_price}")
             return {"dry_run": True}
         
-        return _api_call(
-            self.client.new_order,
+        return self.exchange.create_order(
             symbol=symbol,
-            side=side,
-            type="STOP_MARKET",
-            quantity=quantity,
-            stopPrice=stop_price,
+            type='stop_market',
+            side=side.lower(),
+            amount=quantity,
+            price=stop_price,
         )
 
     def close_position(self, symbol: str, side: str, quantity: float) -> Dict:
         """Close a position."""
-        close_side = "SELL" if side == "BUY" else "BUY"
+        close_side = "sell" if side.lower() == "buy" else "buy"
         if self.settings.dry_run:
             logger.info(f"DRY-RUN: Would close {side} position {quantity} {symbol}")
             return {"dry_run": True}
         
-        return _api_call(
-            self.client.new_order,
+        return self.exchange.create_market_order(
             symbol=symbol,
             side=close_side,
-            type="MARKET",
-            quantity=quantity,
+            amount=quantity,
         )
 
     def clear_orphan_positions(self) -> None:
@@ -137,11 +129,11 @@ class FuturesClient:
         positions = self.get_position_info()
         for pos in positions:
             symbol = pos["symbol"]
-            size = float(pos["positionAmt"])
+            size = float(pos["contracts"])
             if abs(size) > 0.001:  # Has position
                 logger.warning(f"Found orphan position: {symbol} {size}")
                 if not self.settings.dry_run:
-                    close_side = "SELL" if size > 0 else "BUY"
+                    close_side = "sell" if size > 0 else "buy"
                     try:
                         self.close_position(symbol, close_side, abs(size))
                         logger.info(f"Closed orphan position: {symbol}")
