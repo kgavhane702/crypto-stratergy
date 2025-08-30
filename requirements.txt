@@ -1,9 +1,11 @@
 pandas
 numpy
 python-dotenv
-binance
+binance-connector
 tenacity
 tqdm
 matplotlib
 requests
 pytest
+pydantic
+pydantic-settings

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from binance.spot import Spot as BinanceSpot
+from binance.spot import Spot
 
 from .config import get_settings
 from .utils.logger import get_logger
@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 
 def get_top_usdt_symbols(n: int) -> List[str]:
     settings = get_settings()
-    client = BinanceSpot(
+    client = Spot(
         api_key=settings.binance_api_key,
         api_secret=settings.binance_api_secret,
         base_url=settings.binance_base_url,

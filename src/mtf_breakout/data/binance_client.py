@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 
 import os
 import pandas as pd
-from binance.spot import Spot as BinanceSpot
+from binance.spot import Spot
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from ..config import get_settings, Settings
@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 class BinanceDataClient:
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
-        self.client = BinanceSpot(
+        self.client = Spot(
             api_key=self.settings.binance_api_key,
             api_secret=self.settings.binance_api_secret,
             base_url=self.settings.binance_base_url,
